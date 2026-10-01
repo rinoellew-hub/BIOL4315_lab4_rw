@@ -1,0 +1,244 @@
+---
+title: "04-lab4"
+format: html
+editor: visual
+---
+
+Question 1.
+
+```{r}
+fq_path <- systemPipeRdata::pathList()$fastqdir
+
+fq_files <-list.files(fq_path)
+head(fq_files)
+
+meta_data <- read.table(
+  system.file("extdata/param/targetsPE.txt", package="systemPipeRdata"), 
+  header = TRUE)
+
+meta_data <- meta_data %>% mutate (
+  FileName1 = str_replace (FileName1, "./data/", paste0(fq_path, "/")), 
+  FileName2 = str_replace(FileName2, "/data/", paste0(fq_path,"/"))
+)
+
+DT::datatable(meta_data, caption = "Table")
+```
+
+Question 2.
+
+```{r}
+library(Rqc)
+
+q_files <- rqc(path = systemPipeRdata::pathList()$fastqdir, pattern = ".fastq.gz")
+
+q_files_12 <- q_files[1:12]
+q_files_24 <- q_files[13:24]
+q_files_36 <- q_files[25:36]
+  
+plot_12 <- rqcCycleQualityBoxPlot(q_files_12) + theme_bw()
+plot_24 <- rqcCycleQualityBoxPlot(q_files_24) + theme_bw()
+plot_36 <- rqcCycleQualityBoxPlot(q_files_36) + theme_bw()
+
+print(plot_12)
+print(plot_24)
+print(plot_36)
+
+plot_12_frq <- rqcCycleBaseCallsPlot(q_files_12) + theme_bw()
+plot_24_frq <- rqcCycleBaseCallsPlot(q_files_24) + theme_bw()
+plot_36_frq <- rqcCycleBaseCallsPlot(q_files_36) + theme_bw()
+
+print(plot_12_frq)
+print(plot_24_frq)
+print(plot_36_frq)
+  
+  
+```
+
+- There are no samples that have longer reads than others. The shortest number of cycles was around 70 cycles.
+
+- None of the samples had any significant N calls.
+
+- Question 3.
+
+```{r}
+dir.create("outputs/processed_fastq", recursive = TRUE)
+
+for (i in seq_along(meta_data$FileName1)) {
+  file1_clean <- gsub("^\\./", "/", meta_data$FileName1[i])
+  file2_clean <- gsub("^\\./", "/", meta_data$FileName2[i])
+  fastqfiles <- c(file1_clean, file2_clean)
+  
+  l <- length(stringr::str_split_1(meta_data$FileName1[i], "\\/"))
+  
+  n <- length(stringr::str_split_1(meta_data$FileName2[i], "\\/"))
+
+  outfiles <- c(paste0("outputs/processed_fastq/", stringr::str_split_1(file1_clean, "\\/")[l], "_processed.fastq.gz"),
+                paste0("outputs/processed_fastq/", stringr::str_split_1(file2_clean, "\\/")[n], "_processed.fastq.gz"))
+  
+  QuasR::preprocessReads(fastqfiles, outfiles,
+                  nBases=1,
+                  truncateEndBases=3,
+                  Lpattern="GCCCGGGTAA",
+                  minLength=40)
+  
+  meta_data$FileName1[i] <- outfiles[1]
+  meta_data$FileName2[i] <- outfiles[2]
+  
+  system2("gunzip", args = c("-f", outfiles_gz[1]))
+  system2("gunzip", args = c("-f", outfiles_gz[2]))
+  
+  final_fastq1 <- gsub("\\.gz$", "", outfiles_gz[1])
+  final_fastq2 <- gsub("\\.gz$", "", outfiles_gz[2])
+}
+
+```
+
+Question 4.
+
+```{r}
+dir.create("outputs/hisat2_index", recursive = TRUE, showWarnings = FALSE)
+
+at_genome <- "data/GCF_000001735.4_TAIR10.1_genomic.fna"
+
+#Use system2 to run hisat2 from within R
+tryCatch({
+  system2(command = "hisat2-build", 
+          args = c("-p","8", at_genome, "outputs/hisat2_index/tair10_1_index"),
+          stdout = TRUE, stderr = TRUE)
+}, error = function(e) {
+  paste("hisat2-build", "indexing failed with error:", e$message)
+})
+
+sam_dir <- "outputs/sam_files"
+bam_dir <- "outputs/bam_files"
+
+dir.create(sam_dir, recursive = TRUE)
+dir.create(bam_dir, recursive = TRUE)
+
+name_samples <- meta_data$SampleName[i]
+fileq1 <- meta_data$FileName1[i]
+
+sam_out <- file.path(sam_dir, paste0(name_samples, ".sam"))
+bam_out <- file.path(bam_dir, paste0(name_samples, ".bam"))
+bam_sorted <- file.path(bam_dir, paste0(name_samples, "_sorted.bam"))
+
+tryCatch({
+  system2(command = "hisat2_build", 
+          args = c("view", "-bS", sam_out, "-o", bam_out), stdout = TRUE, stderr = TRUE)
+  
+  system2(command = "samtools", 
+          args = c("sort", "--write-index", "-o", ), stdout = TRUE, stderr = TRUE)
+  
+  system2( command = "samtools", 
+    args = c("sort", "--write-index", bam_out, "-o", bam_sorted), stdout = TRUE, stderr = TRUE )},
+  
+  error = function(e) {
+            paste("hisat2-build", "indexing failed with error:", e$message)
+}) 
+
+
+```
+
+Question 5.
+
+```{r}
+
+DT::datatable(
+  align_df, 
+  options = list(pageLength = 6, scrollX = TRUE),
+  caption = "Table 2: Summary of Alignment Percentages",
+  rownames = FALSE
+)
+
+ggplot(align_df, aes(y = Alignment_Percent)) +
+  geom_boxplot(fill = "lightblue", color = "darkblue", width = 0.5, outlier.color = "red") +
+  theme_minimal() +
+  labs(
+    title = "Distribution of Sample Alignment Success",
+    y = "Alignment Percentage",
+    x = ""
+  )
+
+```
+
+Question 6.
+
+```{r}
+count_table <- as.data.frame(gene_count_list$counts)
+
+colnames(count_table) <- gsub("_sort\\.bam\$", "", colnames(count_table))
+
+count_table <- count_table[rowSums(count_table) > 0, , drop = FALSE]
+
+
+DT::datatable(count_table, caption = "Table: Processed RNA sequences")  
+
+```
+
+Question 7.
+
+```{r}
+comp <- systemPipeR::readComp(system.file("extdata/param/targetsPE.txt", package="systemPipeRdata"))
+comp_pairs <- comp[[1]]
+
+if (exists("dds2_results")) {
+
+  filter_and_count <- function(res_obj, comparison_name, fc_threshold = 2) {
+    res_obj %>%
+      as.data.frame() %>%
+      dplyr::filter(abs(log2FoldChange) >= log2(fc_threshold)) %>%
+      dplyr::summarise(
+        Comparison = comparison_name,
+        Up_regulated = sum(log2FoldChange > 0, na.rm = TRUE),
+        Down_regulated = sum(log2FoldChange < 0, na.rm = TRUE)
+      )
+  }
+    return(data.frame(
+      Comparison = comparison_name,
+      Up_regulated = up_regulated,
+      Down_regulated = down_regulated
+    ))
+  
+  results_list2 <- lapply(comp_pairs, function(x) {
+    condits <- stringr::str_split(x, "-")[[1]]
+    DESeq2::results(dds2_results, contrast = c("Factor", condits[1], condits[2]), alpha = 0.2)
+  })
+  names(results_list2) <- names(comp_pairs)
+  
+  results_summary2 <- do.call(rbind, lapply(names(results_list2), function(x) {
+    filter_and_count(results_list2[[x]], x)
+  }))
+   print(results_summary2)
+  
+  plot_data <- results_summary2 %>%
+    pivot_longer(cols = c(Up_regulated, Down_regulated), 
+                 names_to = "Regulation", 
+                 values_to = "Count") %>%
+    mutate(Regulation = factor(Regulation, levels = c("Up_regulated", "Down_regulated")))
+  
+  plot_data <- results_summary %>%
+    pivot_longer(cols = c(Up_regulated, Down_regulated), 
+                 names_to = "Regulation", 
+                 values_to = "Count") %>%
+    mutate(Regulation = factor(Regulation, levels = c("Up_regulated", "Down_regulated")))
+  
+  p <- ggplot(plot_data, aes(x = Comparison, y = Count, fill = Regulation)) +
+    geom_bar(stat = "identity", position = "stack") +
+    coord_flip() +  
+    labs(
+      title = "Differentially Expressed Genes by Comparison",
+      subtitle = "Fold Change >= 2, alpha = 0.2",
+      x = "Comparison",
+      y = "Number of Genes",
+      fill = "Regulation"
+    ) +
+    theme_minimal() 
+  print(p)
+  
+}
+
+```
+
+Question 8. - From our observations eariler we see that the sample groups that were shown together in the clustering pattern is the same as Spearman correlation.
+
+Question 9. - The terms related to defense and stress mechanisms in plants seen in the plot are to do with response to oomycetes, regulation of defense response and regulation of response to stress. From these terms we determined that it turns up its response to avirulent pathogens.
